@@ -29,7 +29,17 @@ impl Default for ChunkManager {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum BlockType {
     Air,
-    Solid,
+    Solid(u8),
+    // 0 -> dirt
+    // 1 -> grass
+    // 2 -> sand
+    // 3 -> snow
+}
+
+#[derive(Resource)]
+struct BlockTextureAtlas {
+    layout: Handle<TextureAtlasLayout>,
+    image: Handle<Image>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -53,33 +63,34 @@ fn main() {
         .add_plugins(DefaultPlugins)
         .insert_resource(ChunkManager::default()) // ✅ Track chunks
         .add_systems(Startup, setup)
-        .add_systems(Startup, generate_initial_chunks)
+        .add_systems(Startup, generate_initial_chunks.after(setup))
         .add_systems(
             Update,
             (
                 move_camera,
                 update_chunks,
-                break_block,
-                place_block,
+                // break_block,
+                // place_block,
                 update_sun,
             ),
         ) // ✅ Now includes block placing
         .run();
 }
 
-fn setup(mut commands: Commands) {
-    // // ✅ Load the block texture image
-    // let texture_handle: Handle<Image> = asset_server.load("textures/blocks.png");
+fn setup(
+    mut commands: Commands,
+    asset_server: Res<AssetServer>,
+    mut layouts: ResMut<Assets<TextureAtlasLayout>>,
+    _images: ResMut<Assets<Image>>,
+) {
+    let texture_handle = asset_server.load("textures/atlas.png");
+    let layout = TextureAtlasLayout::from_grid(UVec2::new(32, 32), 4, 6, None, None);
+    let layout_handle = layouts.add(layout);
 
-    // // ✅ Define the texture atlas layout (e.g., 4x4 grid)
-    // let layout = TextureAtlasLayout::from_grid(UVec2::new(16, 16), 4, 4, None, None);
-    // let layout_handle = layouts.add(layout);
-
-    // // ✅ Store the atlas in a resource
-    // commands.insert_resource(BlockTextureAtlas {
-    //     layout: layout_handle,
-    //     image: texture_handle,
-    // });
+    commands.insert_resource(BlockTextureAtlas {
+        layout: layout_handle,
+        image: texture_handle,
+    });
 
     commands.spawn(Camera3dBundle {
         transform: Transform::from_xyz(0.0, 20.0, 30.0).looking_at(Vec3::ZERO, Vec3::Y),
@@ -90,7 +101,7 @@ fn setup(mut commands: Commands) {
     commands.spawn((
         DirectionalLightBundle {
             directional_light: DirectionalLight {
-                illuminance: 50_000.0, // Brightness of the sun
+                illuminance: 5_000_000.0, // Brightness of the sun
                 shadows_enabled: true,
                 ..default()
             },
@@ -158,14 +169,14 @@ fn generate_initial_chunks(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
-    // textures: Res<BlockTextureAtlas>, // ✅ Add textures here
+    textures: Res<BlockTextureAtlas>, // ✅ Add textures here
 ) {
     let chunk_pos = IVec2::new(0, 0); // Start with a single chunk at (0,0)
     generate_chunk(
         &mut commands,
         &mut meshes,
         &mut materials,
-        // &textures,
+        &textures,
         chunk_pos,
     );
 }
@@ -174,7 +185,7 @@ fn generate_chunk(
     commands: &mut Commands,
     meshes: &mut ResMut<Assets<Mesh>>,
     materials: &mut ResMut<Assets<StandardMaterial>>,
-    // textures: &Res<BlockTextureAtlas>, // ✅ Add textures here
+    textures: &Res<BlockTextureAtlas>, // ✅ Add textures here
     chunk_pos: IVec2,
 ) -> Entity {
     let terrain_noise = Perlin::new(0);
@@ -217,24 +228,25 @@ fn generate_chunk(
                     chunk.blocks[x][y][z] = match biome {
                         Biome::Grassland => {
                             if y == clamped_height {
-                                BlockType::Solid // Grass block
+                                BlockType::Solid(1) // Grass block
                             } else {
-                                BlockType::Solid // Dirt
+                                BlockType::Solid(0) // Dirt
                             }
                         }
-                        Biome::Desert => BlockType::Solid, // Sand
-                        Biome::Snow => BlockType::Solid,   // Snow block
+                        Biome::Desert => BlockType::Solid(2), // Sand
+                        Biome::Snow => BlockType::Solid(3),   // Snow block
                     };
                 }
             }
 
             // **Step 4: Generate Trees in Grassland**
             if biome == Biome::Grassland
-                && rng.gen_range(0..100) < 5
+                && rng.random_range(0..1000) < 5
                 && clamped_height < WORLD_HEIGHT - 6
             {
                 for i in 0..5 {
-                    chunk.blocks[x][clamped_height + i][z] = BlockType::Solid; // Trunk
+                    chunk.blocks[x][clamped_height + i][z] = BlockType::Solid(0);
+                    // Trunk
                 }
                 for dx in -2..=2 {
                     for dz in -2..=2 {
@@ -245,7 +257,7 @@ fn generate_chunk(
                                 let leaf_y = (clamped_height + dy).clamp(0, WORLD_HEIGHT - 1);
                                 let leaf_z =
                                     (z as i32 + dz).clamp(0, CHUNK_SIZE as i32 - 1) as usize;
-                                chunk.blocks[leaf_x][leaf_y][leaf_z] = BlockType::Solid;
+                                chunk.blocks[leaf_x][leaf_y][leaf_z] = BlockType::Solid(1);
                                 // Leaves
                             }
                         }
@@ -255,85 +267,9 @@ fn generate_chunk(
         }
     }
 
-    let entity = spawn_chunk(commands, meshes, materials, &chunk);
+    let entity = spawn_chunk(commands, meshes, materials, textures, &chunk);
     entity
 }
-// fn spawn_chunk(
-//     commands: &mut Commands,
-//     meshes: &mut ResMut<Assets<Mesh>>,
-//     materials: &mut ResMut<Assets<StandardMaterial>>,
-//     chunk: &Chunk,
-// ) {
-//     let mut mesh_data = Vec::new();
-//     let mut indices = Vec::new();
-//     let mut index_offset = 0;
-
-//     let chunk_offset = chunk.position * CHUNK_SIZE as i32;
-
-//     for x in 0..CHUNK_SIZE {
-//         for y in 0..CHUNK_SIZE {
-//             for z in 0..CHUNK_SIZE {
-//                 if chunk.blocks[x][y][z] == BlockType::Solid {
-//                     for (dx, dy, dz, normal) in [
-//                         (1, 0, 0, Vec3::X), (-1, 0, 0, -Vec3::X),
-//                         (0, 1, 0, Vec3::Y), (0, -1, 0, -Vec3::Y),
-//                         (0, 0, 1, Vec3::Z), (0, 0, -1, -Vec3::Z),
-//                     ] {
-//                         let neighbor_x = (x as i32 + dx) as usize;
-//                         let neighbor_y = (y as i32 + dy) as usize;
-//                         let neighbor_z = (z as i32 + dz) as usize;
-
-//                         let is_out_of_bounds = neighbor_x >= CHUNK_SIZE || neighbor_y >= CHUNK_SIZE || neighbor_z >= CHUNK_SIZE;
-//                         let is_air = !is_out_of_bounds && chunk.blocks[neighbor_x][neighbor_y][neighbor_z] == BlockType::Air;
-
-//                         if is_out_of_bounds || is_air {
-//                             let world_pos = Vec3::new(
-//                                 (x as i32 + chunk_offset.x) as f32,
-//                                 (y as i32 + chunk_offset.y) as f32,
-//                                 (z as i32 + chunk_offset.z) as f32,
-//                             );
-
-//                             let vertices = [
-//                                 world_pos + Vec3::new(0.0, 0.0, 0.0),
-//                                 world_pos + Vec3::new(1.0, 0.0, 0.0),
-//                                 world_pos + Vec3::new(1.0, 1.0, 0.0),
-//                                 world_pos + Vec3::new(0.0, 1.0, 0.0),
-//                             ];
-
-//                             mesh_data.extend_from_slice(&vertices);
-//                             indices.extend_from_slice(&[
-//                                 index_offset, index_offset + 1, index_offset + 2,
-//                                 index_offset, index_offset + 2, index_offset + 3
-//                             ]);
-
-//                             index_offset += 4;
-//                         }
-//                     }
-//                 }
-//             }
-//         }
-//     }
-
-//     let mut mesh = Mesh::new(
-//         bevy::render::render_resource::PrimitiveTopology::TriangleList,
-//         RenderAssetUsages::default(), // ❌ This no longer works
-//     );
-//     mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, mesh_data);
-//     mesh.insert_indices(bevy::render::mesh::Indices::U32(indices));
-
-//     let mesh_handle = meshes.add(mesh);
-//     let material_handle = materials.add(StandardMaterial {
-//         base_color: Color::rgb(0.6, 0.7, 0.8),
-//         ..default()
-//     });
-
-//     commands.spawn(PbrBundle {
-//         mesh: Mesh3d(mesh_handle),
-//         material: MeshMaterial3d(material_handle),
-//         transform: Transform::default(),
-//         ..default()
-//     });
-// }
 
 // Define all 6 possible face directions
 const FACE_DIRECTIONS: [(IVec3, [Vec3; 4]); 6] = [
@@ -393,26 +329,119 @@ const FACE_DIRECTIONS: [(IVec3, [Vec3; 4]); 6] = [
     ),
 ];
 
+// fn spawn_chunk(
+//     commands: &mut Commands,
+//     meshes: &mut ResMut<Assets<Mesh>>,
+//     materials: &mut ResMut<Assets<StandardMaterial>>,
+//     chunk: &Chunk,
+// ) -> Entity {
+//     let mut vertices = Vec::new();
+//     let mut indices = Vec::new();
+//     let mut index_count = 0;
+
+//     let chunk_offset = chunk.position * CHUNK_SIZE as i32;
+
+//     for x in 0..CHUNK_SIZE {
+//         for y in 0..CHUNK_SIZE {
+//             for z in 0..CHUNK_SIZE {
+//                 if let BlockType::Solid(solid_type) = chunk.blocks[x][y][z] {
+//                     let block_pos = IVec3::new(x as i32, y as i32, z as i32);
+
+//                     for (normal, face) in FACE_DIRECTIONS.iter() {
+//                         let neighbor_pos = block_pos + *normal;
+//                         let is_out_of_bounds = neighbor_pos.x < 0
+//                             || neighbor_pos.y < 0
+//                             || neighbor_pos.z < 0
+//                             || neighbor_pos.x >= CHUNK_SIZE as i32
+//                             || neighbor_pos.y >= CHUNK_SIZE as i32
+//                             || neighbor_pos.z >= CHUNK_SIZE as i32;
+//                         let is_air = is_out_of_bounds
+//                             || chunk.blocks[neighbor_pos.x as usize][neighbor_pos.y as usize]
+//                                 [neighbor_pos.z as usize]
+//                                 == BlockType::Air;
+
+//                         if is_air {
+//                             let world_pos = Vec3::new(
+//                                 (block_pos.x + chunk_offset.x) as f32,
+//                                 (block_pos.y + chunk_offset.y) as f32,
+//                                 (block_pos.z + chunk_offset.z) as f32,
+//                             );
+
+//                             let face_vertices: Vec<Vec3> =
+//                                 face.iter().map(|v| *v + world_pos).collect();
+//                             vertices.extend_from_slice(&face_vertices);
+
+//                             indices.extend_from_slice(&[
+//                                 index_count,
+//                                 index_count + 1,
+//                                 index_count + 2,
+//                                 index_count,
+//                                 index_count + 2,
+//                                 index_count + 3,
+//                             ]);
+
+//                             index_count += 4;
+//                         }
+//                     }
+//                 }
+//             }
+//         }
+//     }
+
+//     let mut mesh = Mesh::new(
+//         bevy::render::render_resource::PrimitiveTopology::TriangleList,
+//         RenderAssetUsages::default(),
+//     );
+//     mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, vertices);
+//     mesh.insert_indices(bevy::render::mesh::Indices::U32(indices));
+
+//     let mesh_handle = meshes.add(mesh);
+
+//     // Assign block color based on type
+//     let material_handle = materials.add(StandardMaterial {
+//         base_color: match chunk.blocks[0][0][0] {
+//             // BlockType::Solid(0) => Color::rgb(0.545, 0.271, 0.075), // Brown (Dirt)
+//             BlockType::Solid(0) | BlockType::Solid(1) => Color::srgb(0.133, 0.545, 0.133), // Green (Grass)
+//             BlockType::Solid(2) => Color::srgb(1.0, 0.843, 0.0), // Yellow (Sand)
+//             BlockType::Solid(3) => Color::srgb(1.0, 1.0, 1.0),   // White (Snow)
+//             _ => Color::srgb(0.6, 0.7, 0.8),                     // Default color
+//         },
+//         ..default()
+//     });
+
+//     commands
+//         .spawn(PbrBundle {
+//             mesh: Mesh3d(mesh_handle),
+//             material: MeshMaterial3d(material_handle),
+//             transform: Transform::default(),
+//             ..default()
+//         })
+//         .id()
+// }
+
 fn spawn_chunk(
     commands: &mut Commands,
     meshes: &mut ResMut<Assets<Mesh>>,
     materials: &mut ResMut<Assets<StandardMaterial>>,
-    // _textures: &Res<BlockTextureAtlas>, // ✅ Use the texture atlas
+    texture_atlas: &Res<BlockTextureAtlas>,
     chunk: &Chunk,
 ) -> Entity {
     let mut vertices = Vec::new();
     let mut indices = Vec::new();
+    let mut uvs = Vec::new(); // Store UV coordinates
     let mut index_count = 0;
 
     let chunk_offset = chunk.position * CHUNK_SIZE as i32;
+    let cell_size = 1.0 / 4.0; // 4 columns for blocks
+    let face_size = 1.0 / 6.0; // 6 rows for faces
 
     for x in 0..CHUNK_SIZE {
         for y in 0..CHUNK_SIZE {
             for z in 0..CHUNK_SIZE {
-                if chunk.blocks[x][y][z] == BlockType::Solid {
+                if let BlockType::Solid(block_id) = chunk.blocks[x][y][z] {
                     let block_pos = IVec3::new(x as i32, y as i32, z as i32);
 
-                    for (normal, face) in FACE_DIRECTIONS.iter() {
+                    for (face_index, (normal, face)) in FACE_DIRECTIONS.iter().enumerate() {
                         let neighbor_pos = block_pos + *normal;
                         let is_out_of_bounds = neighbor_pos.x < 0
                             || neighbor_pos.y < 0
@@ -436,6 +465,16 @@ fn spawn_chunk(
                                 face.iter().map(|v| *v + world_pos).collect();
                             vertices.extend_from_slice(&face_vertices);
 
+                            let uv_x = block_id as f32 * cell_size;
+                            let uv_y = face_index as f32 * face_size;
+
+                            uvs.extend_from_slice(&[
+                                Vec2::new(uv_x, uv_y),
+                                Vec2::new(uv_x + cell_size, uv_y),
+                                Vec2::new(uv_x + cell_size, uv_y + face_size),
+                                Vec2::new(uv_x, uv_y + face_size),
+                            ]);
+
                             indices.extend_from_slice(&[
                                 index_count,
                                 index_count + 1,
@@ -458,11 +497,12 @@ fn spawn_chunk(
         RenderAssetUsages::default(),
     );
     mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, vertices);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
     mesh.insert_indices(bevy::render::mesh::Indices::U32(indices));
 
     let mesh_handle = meshes.add(mesh);
     let material_handle = materials.add(StandardMaterial {
-        base_color: Color::rgb(0.6, 0.7, 0.8),
+        base_color_texture: Some(texture_atlas.image.clone()),
         ..default()
     });
 
@@ -481,7 +521,7 @@ fn update_chunks(
     mut chunk_manager: ResMut<ChunkManager>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
-    // textures: Res<BlockTextureAtlas>, // ✅ Add textures here
+    textures: Res<BlockTextureAtlas>, // ✅ Add textures here
     player_query: Query<&Transform, With<Camera3d>>,
 ) {
     let player_transform = player_query.single();
@@ -522,7 +562,7 @@ fn update_chunks(
             &mut commands,
             &mut meshes,
             &mut materials,
-            // &textures,
+            &textures,
             chunk_pos,
         );
         chunk_manager.chunks.insert(chunk_pos, entity);
@@ -561,7 +601,7 @@ fn raycast_block(
                 let local_y = (block_pos.y.rem_euclid(WORLD_HEIGHT as i32)) as usize;
                 let local_z = (block_pos.z.rem_euclid(CHUNK_SIZE as i32)) as usize;
 
-                if chunk.blocks[local_x][local_y][local_z] == BlockType::Solid {
+                if let BlockType::Solid(_) = chunk.blocks[local_x][local_y][local_z] {
                     return last_air_pos.map(|air_pos| (block_pos, air_pos, chunk_pos));
                 // ✅ Return the first air position
                 } else {
@@ -576,87 +616,87 @@ fn raycast_block(
     None
 }
 
-fn break_block(
-    mut commands: Commands,
-    mut chunk_manager: ResMut<ChunkManager>,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
-    mouse_input: Res<ButtonInput<MouseButton>>,
-    camera_query: Query<&Transform, With<Camera3d>>,
-    // textures: Res<BlockTextureAtlas>, // ✅ Add textures here
-    mut chunk_queries: ParamSet<(Query<&Chunk>, Query<&mut Chunk>)>, // ✅ Fix: Use ParamSet to separate read/write
-) {
-    if mouse_input.just_pressed(MouseButton::Left) {
-        let camera_transform = camera_query.single();
+// fn break_block(
+//     mut commands: Commands,
+//     mut chunk_manager: ResMut<ChunkManager>,
+//     mut meshes: ResMut<Assets<Mesh>>,
+//     mut materials: ResMut<Assets<StandardMaterial>>,
+//     mouse_input: Res<ButtonInput<MouseButton>>,
+//     camera_query: Query<&Transform, With<Camera3d>>,
+//     // textures: Res<BlockTextureAtlas>, // ✅ Add textures here
+//     mut chunk_queries: ParamSet<(Query<&Chunk>, Query<&mut Chunk>)>, // ✅ Fix: Use ParamSet to separate read/write
+// ) {
+//     if mouse_input.just_pressed(MouseButton::Left) {
+//         let camera_transform = camera_query.single();
 
-        // Use first query set (immutable) for raycasting
-        if let Some((_, block_pos, chunk_pos)) =
-            raycast_block(camera_transform, &chunk_manager, &chunk_queries.p0())
-        {
-            if let Some(entity) = chunk_manager.chunks.get(&chunk_pos) {
-                // Use second query set (mutable) to modify the chunk
-                if let Ok(mut chunk) = chunk_queries.p1().get_mut(*entity) {
-                    let local_x = (block_pos.x.rem_euclid(CHUNK_SIZE as i32)) as usize;
-                    let local_y = (block_pos.y.rem_euclid(WORLD_HEIGHT as i32)) as usize;
-                    let local_z = (block_pos.z.rem_euclid(CHUNK_SIZE as i32)) as usize;
+//         // Use first query set (immutable) for raycasting
+//         if let Some((_, block_pos, chunk_pos)) =
+//             raycast_block(camera_transform, &chunk_manager, &chunk_queries.p0())
+//         {
+//             if let Some(entity) = chunk_manager.chunks.get(&chunk_pos) {
+//                 // Use second query set (mutable) to modify the chunk
+//                 if let Ok(mut chunk) = chunk_queries.p1().get_mut(*entity) {
+//                     let local_x = (block_pos.x.rem_euclid(CHUNK_SIZE as i32)) as usize;
+//                     let local_y = (block_pos.y.rem_euclid(WORLD_HEIGHT as i32)) as usize;
+//                     let local_z = (block_pos.z.rem_euclid(CHUNK_SIZE as i32)) as usize;
 
-                    chunk.blocks[local_x][local_y][local_z] = BlockType::Air; // ✅ Remove block
+//                     chunk.blocks[local_x][local_y][local_z] = BlockType::Air; // ✅ Remove block
 
-                    // Regenerate the chunk mesh
-                    commands.entity(*entity).despawn_recursive();
-                    let new_entity = spawn_chunk(
-                        &mut commands,
-                        &mut meshes,
-                        &mut materials,
-                        // &textures,
-                        &chunk,
-                    );
-                    chunk_manager.chunks.insert(chunk_pos, new_entity);
-                }
-            }
-        }
-    }
-}
+//                     // Regenerate the chunk mesh
+//                     commands.entity(*entity).despawn_recursive();
+//                     let new_entity = spawn_chunk(
+//                         &mut commands,
+//                         &mut meshes,
+//                         &mut materials,
+//                         // &textures,
+//                         &chunk,
+//                     );
+//                     chunk_manager.chunks.insert(chunk_pos, new_entity);
+//                 }
+//             }
+//         }
+//     }
+// }
 
-fn place_block(
-    mut commands: Commands,
-    mut chunk_manager: ResMut<ChunkManager>,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
-    mouse_input: Res<ButtonInput<MouseButton>>,
-    camera_query: Query<&Transform, With<Camera3d>>,
-    // textures: Res<BlockTextureAtlas>, // ✅ Add textures here
-    mut chunk_queries: ParamSet<(Query<&Chunk>, Query<&mut Chunk>)>, // ✅ Fix conflicting queries
-) {
-    if mouse_input.just_pressed(MouseButton::Right) {
-        let camera_transform = camera_query.single();
+// fn place_block(
+//     mut commands: Commands,
+//     mut chunk_manager: ResMut<ChunkManager>,
+//     mut meshes: ResMut<Assets<Mesh>>,
+//     mut materials: ResMut<Assets<StandardMaterial>>,
+//     mouse_input: Res<ButtonInput<MouseButton>>,
+//     camera_query: Query<&Transform, With<Camera3d>>,
+//     // textures: Res<BlockTextureAtlas>, // ✅ Add textures here
+//     mut chunk_queries: ParamSet<(Query<&Chunk>, Query<&mut Chunk>)>, // ✅ Fix conflicting queries
+// ) {
+//     if mouse_input.just_pressed(MouseButton::Right) {
+//         let camera_transform = camera_query.single();
 
-        if let Some((_solid_block_pos, air_pos, chunk_pos)) =
-            raycast_block(camera_transform, &chunk_manager, &chunk_queries.p0())
-        {
-            if let Some(entity) = chunk_manager.chunks.get(&chunk_pos) {
-                if let Ok(mut chunk) = chunk_queries.p1().get_mut(*entity) {
-                    let local_x = (air_pos.x.rem_euclid(CHUNK_SIZE as i32)) as usize;
-                    let local_y = (air_pos.y.rem_euclid(WORLD_HEIGHT as i32)) as usize;
-                    let local_z = (air_pos.z.rem_euclid(CHUNK_SIZE as i32)) as usize;
+//         if let Some((_solid_block_pos, air_pos, chunk_pos)) =
+//             raycast_block(camera_transform, &chunk_manager, &chunk_queries.p0())
+//         {
+//             if let Some(entity) = chunk_manager.chunks.get(&chunk_pos) {
+//                 if let Ok(mut chunk) = chunk_queries.p1().get_mut(*entity) {
+//                     let local_x = (air_pos.x.rem_euclid(CHUNK_SIZE as i32)) as usize;
+//                     let local_y = (air_pos.y.rem_euclid(WORLD_HEIGHT as i32)) as usize;
+//                     let local_z = (air_pos.z.rem_euclid(CHUNK_SIZE as i32)) as usize;
 
-                    chunk.blocks[local_x][local_y][local_z] = BlockType::Solid; // ✅ Place block
+//                     chunk.blocks[local_x][local_y][local_z] = BlockType::Solid(2); // ✅ Place block
 
-                    // Regenerate the chunk mesh
-                    commands.entity(*entity).despawn_recursive();
-                    let new_entity = spawn_chunk(
-                        &mut commands,
-                        &mut meshes,
-                        &mut materials,
-                        // &textures,
-                        &chunk,
-                    );
-                    chunk_manager.chunks.insert(chunk_pos, new_entity);
-                }
-            }
-        }
-    }
-}
+//                     // Regenerate the chunk mesh
+//                     commands.entity(*entity).despawn_recursive();
+//                     let new_entity = spawn_chunk(
+//                         &mut commands,
+//                         &mut meshes,
+//                         &mut materials,
+//                         // &textures,
+//                         &chunk,
+//                     );
+//                     chunk_manager.chunks.insert(chunk_pos, new_entity);
+//                 }
+//             }
+//         }
+//     }
+// }
 
 fn update_sun(time: Res<Time>, mut sun_query: Query<&mut Transform, With<Sun>>) {
     let mut sun_transform = sun_query.single_mut();
