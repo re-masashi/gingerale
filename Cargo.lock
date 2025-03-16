@@ -1121,6 +1121,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "bevy_skybox"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c58e7dc0ca4efb97273cc446f70f45e82f7cbc10c454550795ecc5fdeff1aa9e"
+dependencies = [
+ "bevy",
+ "image",
+ "itertools 0.14.0",
+]
+
+[[package]]
 name = "bevy_sprite"
 version = "0.15.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2403,6 +2414,7 @@ dependencies = [
  "bevy",
  "bevy_asset",
  "bevy_egui",
+ "bevy_skybox",
  "noise",
  "rand 0.9.0",
 ]
@@ -2885,6 +2897,15 @@ name = "itertools"
 version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "413ee7dfc52ee1a4949ceeb7dbc8a33f2d6c088194d9f922fb8318faf1f01186"
+dependencies = [
+ "either",
+]
+
+[[package]]
+name = "itertools"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2b192c782037fadd9cfa75548310488aabdbf3d2da73885b31bd0abd03351285"
 dependencies = [
  "either",
 ]

@@ -180,7 +180,7 @@ fn generate_initial_chunks(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
-    textures: Res<BlockTextureAtlas>, // ✅ Add textures here
+    textures: Res<AssetServer>, // ✅ Add textures here
 ) {
     let chunk_pos = IVec2::new(0, 0); // Start with a single chunk at (0,0)
     generate_chunk(
@@ -196,7 +196,7 @@ fn generate_chunk(
     commands: &mut Commands,
     meshes: &mut ResMut<Assets<Mesh>>,
     materials: &mut ResMut<Assets<StandardMaterial>>,
-    textures: &Res<BlockTextureAtlas>, // ✅ Add textures here
+    textures: &Res<AssetServer>, // ✅ Add textures here
     chunk_pos: IVec2,
 ) -> Entity {
     let terrain_noise = Perlin::new(0);
@@ -434,17 +434,46 @@ fn spawn_chunk(
     commands: &mut Commands,
     meshes: &mut ResMut<Assets<Mesh>>,
     materials: &mut ResMut<Assets<StandardMaterial>>,
-    texture_atlas: &Res<BlockTextureAtlas>,
+    asset_server: &Res<AssetServer>, // Load individual textures
     chunk: &Chunk,
 ) -> Entity {
     let mut vertices = Vec::new();
     let mut indices = Vec::new();
-    let mut uvs = Vec::new(); // Store UV coordinates
     let mut index_count = 0;
 
     let chunk_offset = chunk.position * CHUNK_SIZE as i32;
-    let cell_size = 1.0 / 4.0; // 4 columns for blocks
-    let face_size = 1.0 / 6.0; // 6 rows for faces
+
+    // Load individual textures per block type
+    let texture_handles: HashMap<u8, Handle<Image>> = [
+        (0, asset_server.load("textures/dirt.png")),
+        (1, asset_server.load("textures/grass.png")),
+        (2, asset_server.load("textures/sand.png")),
+        (3, asset_server.load("textures/stone.png")),
+        (4, asset_server.load("textures/snow.png")),
+    ]
+    .iter()
+    .cloned()
+    .collect();
+
+    // Store materials per block type
+    let mut material_handles: HashMap<u8, Handle<StandardMaterial>> = HashMap::new();
+
+    for (block_id, texture_handle) in &texture_handles {
+        material_handles.insert(
+            *block_id,
+            materials.add(StandardMaterial {
+                base_color_texture: Some(texture_handle.clone()),
+                base_color: Color::WHITE,
+                perceptual_roughness: 1.0,
+                metallic: 0.0,
+                reflectance: 0.5,
+                unlit: false,
+                ..default()
+            }),
+        );
+    }
+
+    let mut mesh_materials = Vec::new(); // Store material assignments
 
     for x in 0..CHUNK_SIZE {
         for y in 0..CHUNK_SIZE {
@@ -452,7 +481,7 @@ fn spawn_chunk(
                 if let BlockType::Solid(block_id) = chunk.blocks[x][y][z] {
                     let block_pos = IVec3::new(x as i32, y as i32, z as i32);
 
-                    for (face_index, (normal, face)) in FACE_DIRECTIONS.iter().enumerate() {
+                    for (normal, face) in FACE_DIRECTIONS.iter() {
                         let neighbor_pos = block_pos + *normal;
                         let is_out_of_bounds = neighbor_pos.x < 0
                             || neighbor_pos.y < 0
@@ -476,16 +505,6 @@ fn spawn_chunk(
                                 face.iter().map(|v| *v + world_pos).collect();
                             vertices.extend_from_slice(&face_vertices);
 
-                            let uv_x = block_id as f32 * cell_size;
-                            let uv_y = face_index as f32 * face_size;
-
-                            uvs.extend_from_slice(&[
-                                Vec2::new(uv_x, uv_y),
-                                Vec2::new(uv_x + cell_size, uv_y),
-                                Vec2::new(uv_x + cell_size, uv_y + face_size),
-                                Vec2::new(uv_x, uv_y + face_size),
-                            ]);
-
                             indices.extend_from_slice(&[
                                 index_count,
                                 index_count + 1,
@@ -496,6 +515,11 @@ fn spawn_chunk(
                             ]);
 
                             index_count += 4;
+
+                            // Store material reference
+                            if let Some(material) = material_handles.get(&block_id) {
+                                mesh_materials.push(material.clone());
+                            }
                         }
                     }
                 }
@@ -508,28 +532,22 @@ fn spawn_chunk(
         RenderAssetUsages::default(),
     );
     mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, vertices);
-    mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
     mesh.insert_indices(bevy::render::mesh::Indices::U32(indices));
 
     let mesh_handle = meshes.add(mesh);
-    let material_handle = materials.add(StandardMaterial {
-        base_color_texture: Some(texture_atlas.image.clone()),
-        base_color: Color::srgb(1.0, 1.0, 1.0),
-        perceptual_roughness: 1.0,
-        metallic: 0.0,
-        reflectance: 0.5, // Adjust as needed
-        unlit: false,     // Ensure it's not set to "unlit"
+
+    let entity = commands.spawn(PbrBundle {
+        mesh: bevy::prelude::Mesh3d(mesh_handle),
+        material: bevy::prelude::MeshMaterial3d(materials.add(StandardMaterial {
+            base_color: Color::WHITE,
+            unlit: false,
+            ..default()
+        })),
+        transform: Transform::default(),
         ..default()
     });
 
-    commands
-        .spawn(PbrBundle {
-            mesh: Mesh3d(mesh_handle),
-            material: MeshMaterial3d(material_handle),
-            transform: Transform::default(),
-            ..default()
-        })
-        .id()
+    entity.id()
 }
 
 fn update_chunks(
@@ -537,7 +555,7 @@ fn update_chunks(
     mut chunk_manager: ResMut<ChunkManager>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
-    textures: Res<BlockTextureAtlas>, // ✅ Add textures here
+    textures: Res<AssetServer>, // ✅ Add textures here
     player_query: Query<&Transform, With<Camera3d>>,
 ) {
     let player_transform = player_query.single();
