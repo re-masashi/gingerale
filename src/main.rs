@@ -1,6 +1,7 @@
 use bevy::input::mouse::MouseMotion;
 use bevy::prelude::*;
 use bevy_asset::RenderAssetUsages;
+use bevy_fps_counter::{FpsCounter, FpsCounterPlugin};
 use bevy_skybox::{SkyboxCamera, SkyboxPlugin};
 use noise::{NoiseFn, Perlin};
 use rand::Rng;
@@ -8,9 +9,17 @@ use rand::Rng;
 use std::collections::{HashMap, HashSet};
 
 const CHUNK_SIZE: usize = 40;
-const WORLD_HEIGHT: usize = 128; // Increase height for better terrain
-const NOISE_SCALE: f64 = 0.0314; // Controls terrain smoothness
+const WORLD_HEIGHT: usize = 256; // Increase height for better terrain
+const NOISE_SCALE: f64 = 0.01; // Controls terrain smoothness
 const RENDER_DISTANCE: i32 = 5; // Load chunks in a n x n area around the player
+
+#[derive(Component)]
+struct Player;
+
+#[derive(Component)]
+struct FollowPlayer {
+    target: Entity, // The player entity to follow
+}
 
 #[derive(Resource)]
 struct ChunkManager {
@@ -59,13 +68,30 @@ struct Chunk {
     position: IVec3, // Chunk position in chunk coordinates
 }
 
+fn follow_player_system(
+    players: Query<&Transform, With<Player>>,
+    mut cameras: Query<(&mut Transform, &FollowPlayer)>,
+) {
+    for (mut cam_transform, follow) in cameras.iter_mut() {
+        if let Ok(player_transform) = players.get(follow.target) {
+            // Smoothly interpolate towards the player's position
+            let target_position = player_transform.translation + Vec3::new(0.0, 5.0, 10.0);
+            cam_transform.translation = cam_transform.translation.lerp(target_position, 0.1);
+
+            // Make camera look at the player
+            cam_transform.look_at(player_transform.translation, Vec3::Y);
+        }
+    }
+}
+
 fn main() {
     App::new()
         .add_plugins(DefaultPlugins)
+        .add_plugins(FpsCounterPlugin)
+        .add_plugins(SkyboxPlugin::from_image_file("sky1.png"))
         .insert_resource(ChunkManager::default()) // ✅ Track chunks
         .add_systems(Startup, setup)
         .add_systems(Startup, generate_initial_chunks.after(setup))
-        .add_plugins(SkyboxPlugin::from_image_file("sky1.png"))
         .add_systems(
             Update,
             (
@@ -74,6 +100,7 @@ fn main() {
                 // break_block,
                 // place_block,
                 update_sun,
+                mouse_handler,
             ),
         )
         .run();
@@ -82,28 +109,50 @@ fn main() {
 fn setup(
     mut commands: Commands,
     asset_server: Res<AssetServer>,
-    _layouts: ResMut<Assets<TextureAtlasLayout>>,
-    _images: ResMut<Assets<Image>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut ambient_light: ResMut<AmbientLight>, // ✅ Add AmbientLight
 ) {
     let texture_handle = asset_server.load("textures/atlas.png");
     let _layout = TextureAtlasLayout::from_grid(UVec2::new(32, 32), 4, 6, None, None);
     // let layout_handle = layouts.add(layout);
+
+    // ✅ Increase ambient light intensity
+    *ambient_light = AmbientLight {
+        color: Color::srgb(1.0, 1.0, 1.0), // White light
+        brightness: 1700.0,                // Adjust as needed
+    };
 
     commands.insert_resource(BlockTextureAtlas {
         // layout: layout_handle,
         image: texture_handle,
     });
 
-    commands.spawn((
-        Camera3d::default(),
-        Projection::from(PerspectiveProjection {
-            // 120 degree field-of-view.
-            fov: 70.0_f32.to_radians(),
+    let player = commands
+        .spawn(PbrBundle {
+            mesh: bevy::prelude::Mesh3d(meshes.add(Mesh::from(Cuboid::new(1.0, 1.0, 1.0)))),
+            material: bevy::prelude::MeshMaterial3d(materials.add(StandardMaterial {
+                base_color_texture: Some(asset_server.load("textures/grass.png")),
+                ..default()
+            })),
+            transform: Transform::from_xyz(0.0, 2.0, 0.0),
             ..default()
-        }),
-        Transform::from_xyz(0.0, 20.0, 30.0).looking_at(Vec3::ZERO, Vec3::Y),
-        SkyboxCamera,
-    ));
+        })
+        .insert(Player)
+        .id();
+
+    commands
+        .spawn((
+            Camera3d::default(),
+            Projection::from(PerspectiveProjection {
+                // 120 degree field-of-view.
+                fov: 70.0_f32.to_radians(),
+                ..default()
+            }),
+            Transform::from_xyz(0.0, 5.0, 10.0).looking_at(Vec3::ZERO, Vec3::Y),
+            SkyboxCamera,
+        ))
+        .insert(FollowPlayer { target: player });
 
     // Spawn the Sun
     commands.spawn((
@@ -112,6 +161,7 @@ fn setup(
             shadows_enabled: true,
             ..default()
         },
+        Transform::from_xyz(0.0, 5.0, 5.0).looking_at(Vec3::ZERO, Vec3::Y),
         Sun, // ✅ Tag it as the Sun
     ));
 
@@ -123,46 +173,59 @@ fn setup(
     });
 }
 
+fn mouse_handler(
+    mouse_button_input: Res<ButtonInput<MouseButton>>,
+    mut diags_state: ResMut<FpsCounter>,
+) {
+    if mouse_button_input.pressed(MouseButton::Left) {
+        if diags_state.is_enabled() {
+            diags_state.disable();
+        } else {
+            diags_state.enable();
+        }
+    }
+}
+
 fn move_camera(
     mut query: Query<&mut Transform, (With<Camera3d>,)>,
-    keyboard_input: Res<ButtonInput<KeyCode>>,
+    keyboard: Res<ButtonInput<KeyCode>>,
     mut motion_events: EventReader<MouseMotion>,
     time: Res<Time>,
 ) {
     let mut transform = query.single_mut();
 
-    let speed = 5.0;
+    // let speed = 5.0;
     let sensitivity = 0.1;
 
-    // WASD Movement
-    let mut direction = Vec3::ZERO;
-    if keyboard_input.pressed(KeyCode::KeyW) {
-        direction.z += 1.0;
-    }
-    if keyboard_input.pressed(KeyCode::KeyS) {
-        direction.z -= 1.0;
-    }
-    if keyboard_input.pressed(KeyCode::KeyA) {
-        direction.x -= 1.0;
-    }
-    if keyboard_input.pressed(KeyCode::KeyD) {
-        direction.x += 1.0;
-    }
-    if keyboard_input.pressed(KeyCode::Space) {
-        direction.y += 1.0;
-    }
-    if keyboard_input.pressed(KeyCode::ShiftLeft) {
-        direction.y -= 1.0;
-    }
+    // // WASD Movement
+    // let mut direction = Vec3::ZERO;
+    // if keyboard_input.pressed(KeyCode::KeyW) {
+    //     direction.z += 1.0;
+    // }
+    // if keyboard_input.pressed(KeyCode::KeyS) {
+    //     direction.z -= 1.0;
+    // }
+    // if keyboard_input.pressed(KeyCode::KeyA) {
+    //     direction.x -= 1.0;
+    // }
+    // if keyboard_input.pressed(KeyCode::KeyD) {
+    //     direction.x += 1.0;
+    // }
+    // if keyboard_input.pressed(KeyCode::Space) {
+    //     direction.y += 1.0;
+    // }
+    // if keyboard_input.pressed(KeyCode::ShiftLeft) {
+    //     direction.y -= 1.0;
+    // }
 
-    let forward = transform.forward();
-    let right = transform.right();
-    let movement = (forward * direction.z + right * direction.x + Vec3::Y * direction.y)
-        .normalize_or_zero()
-        * speed
-        * time.delta_secs();
+    // let forward = transform.forward();
+    // let right = transform.right();
+    // let movement = (forward * direction.z + right * direction.x + Vec3::Y * direction.y)
+    //     .normalize_or_zero()
+    //     * speed
+    //     * time.delta_secs();
 
-    transform.translation += movement;
+    // transform.translation += movement;
 
     // Mouse Movement
     for event in motion_events.read() {
@@ -170,10 +233,34 @@ fn move_camera(
         let delta_y = event.delta.y;
 
         let rotation_x = Quat::from_rotation_y(-delta_x * sensitivity * time.delta_secs());
-        let rotation_y = Quat::from_rotation_x(-delta_y * sensitivity * time.delta_secs());
+        let rotation_y = Quat::from_rotation_x(-delta_y * 0.0 * time.delta_secs());
 
         transform.rotation = rotation_x * transform.rotation * rotation_y;
     }
+    let mut player_transform = query.single_mut();
+    let mut direction = Vec3::ZERO;
+
+    if keyboard.pressed(KeyCode::KeyW) {
+        direction += Vec3::new(0.0, 0.0, -1.0);
+    }
+    if keyboard.pressed(KeyCode::KeyS) {
+        direction += Vec3::new(0.0, 0.0, 1.0);
+    }
+    if keyboard.pressed(KeyCode::KeyA) {
+        direction += Vec3::new(-1.0, 0.0, 0.0);
+    }
+    if keyboard.pressed(KeyCode::KeyD) {
+        direction += Vec3::new(1.0, 0.0, 0.0);
+    }
+    if keyboard.pressed(KeyCode::Space) {
+        direction.y += 1.0;
+    }
+    if keyboard.pressed(KeyCode::ShiftLeft) {
+        direction.y -= 1.0;
+    }
+
+    let speed = 5.0;
+    player_transform.translation += direction.normalize_or_zero() * speed * time.delta_secs();
 }
 
 fn generate_initial_chunks(
@@ -199,9 +286,9 @@ fn generate_chunk(
     textures: &Res<BlockTextureAtlas>, // ✅ Add textures here
     chunk_pos: IVec2,
 ) -> Entity {
-    let terrain_noise = Perlin::new(0);
-    let cave_noise = Perlin::new(0);
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
+    let terrain_noise = Perlin::new(rng.random());
+    let cave_noise = Perlin::new(rng.random());
 
     let mut chunk = Chunk {
         blocks: [[[BlockType::Air; CHUNK_SIZE]; WORLD_HEIGHT]; CHUNK_SIZE],
