@@ -135,7 +135,7 @@ fn setup(
             })),
             spawn_pos,
             RigidBody::Dynamic,              // Enables physics simulation
-            Collider::cuboid(0.5, 1.5, 0.5), // Hitbox
+            Collider::cuboid(0.5, 2.0, 0.5), // Hitbox
             GravityScale(1.0),               // Normal gravity
             Velocity::zero(),
         ))
